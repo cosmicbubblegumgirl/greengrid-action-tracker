@@ -15,6 +15,7 @@ import {
   MessageCircleHeart,
   Plus,
   Recycle,
+  RotateCcw,
   Send,
   ShieldCheck,
   Sparkles,
@@ -27,27 +28,23 @@ import {
   Zap,
 } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import type { CSSProperties, FormEvent, PointerEvent } from 'react'
+import {
+  addStoryReaction,
+  createFallbackDashboard,
+  isApiError,
+  joinChallenge,
+  loadDashboard,
+  resetLocalDashboard,
+  submitAction,
+  trackResource,
+  updatePrivacy,
+} from './api'
 import './App.css'
+import type { Category, CategoryId, GridTile, SyncMode } from './types'
 
-type CategoryId = 'reuse' | 'energy' | 'transport' | 'food' | 'community'
-
-type Category = {
-  id: CategoryId
-  label: string
-  hint: string
-  color: string
+type CategoryView = Category & {
   Icon: typeof Droplets
-  actions: string[]
-}
-
-type GridTile = {
-  category: CategoryId | 'open'
-  learner: string
-  action: string
-  impact: string
-  reflection: string
-  date: string
-  reaction: string
 }
 
 type Seed = {
@@ -56,7 +53,7 @@ type Seed = {
   y: number
 }
 
-const categories: Category[] = [
+const categories: CategoryView[] = [
   {
     id: 'reuse',
     label: 'Refill and reuse',
@@ -129,122 +126,6 @@ const categories: Category[] = [
   },
 ]
 
-const statCards = [
-  { label: 'Estimated CO2 saved this week', value: 18.4, suffix: ' kg' },
-  { label: 'Current team streak', value: 12, suffix: ' days' },
-  { label: 'Learners checked in today', value: 3, suffix: ' learners' },
-  { label: 'Single-use bottles avoided', value: 64, suffix: ' bottles' },
-]
-
-const sampleTiles: GridTile[] = [
-  {
-    category: 'reuse',
-    learner: 'Maya',
-    action: 'Refilled a water bottle',
-    impact: '1 bottle avoided',
-    reflection: 'Easy to repeat after keeping a bottle near my desk.',
-    date: 'Today',
-    reaction: 'Keep Growing',
-  },
-  {
-    category: 'energy',
-    learner: 'Theo',
-    action: 'Switched off unused lights',
-    impact: '0.3 kg CO2 estimated',
-    reflection: 'The lab was bright enough with daylight.',
-    date: 'Today',
-    reaction: 'Bright Move',
-  },
-  {
-    category: 'transport',
-    learner: 'Anonymous',
-    action: 'Walked part of the route',
-    impact: '1.8 km lower-carbon travel',
-    reflection: 'Took ten extra minutes and felt calmer.',
-    date: 'Yesterday',
-    reaction: 'Team Energy',
-  },
-  {
-    category: 'food',
-    learner: 'Ari',
-    action: 'Used leftovers',
-    impact: '1 meal rescued',
-    reflection: 'Made lunch cheaper too.',
-    date: 'Yesterday',
-    reaction: 'Clever Reuse',
-  },
-  {
-    category: 'community',
-    learner: 'Nia',
-    action: 'Shared an environmental resource',
-    impact: '6 classmates reached',
-    reflection: 'Short practical tips worked best.',
-    date: 'Monday',
-    reaction: 'Ripple Effect',
-  },
-  {
-    category: 'reuse',
-    learner: 'Jon',
-    action: 'Used a reusable cup',
-    impact: '1 cup avoided',
-    reflection: 'The cafe remembered the discount.',
-    date: 'Monday',
-    reaction: 'Keep Growing',
-  },
-]
-
-const challenges = [
-  {
-    title: 'Plastic-Light Week',
-    progress: 72,
-    accent: '#24c26a',
-    reward: 'Community garden island',
-    detail: '46 of 64 refill or reuse actions complete',
-  },
-  {
-    title: 'Switch-It-Off Sprint',
-    progress: 58,
-    accent: '#f6c64f',
-    reward: 'Solar path lights',
-    detail: 'Nine energy-saving actions logged this week',
-  },
-  {
-    title: 'Campus Cleanup Quest',
-    progress: 41,
-    accent: '#a98df2',
-    reward: 'Recycling station',
-    detail: 'A shared project board is now open',
-  },
-]
-
-const stories = [
-  {
-    type: 'Team celebration',
-    title: 'The grid just got greener.',
-    body: 'Three learners checked in before lunch and completed a full refill row.',
-    reaction: 'Keep Growing',
-  },
-  {
-    type: 'Repair story',
-    title: 'A cable saved from the bin.',
-    body: 'A quick repair turned into a reusable charger station for the studio.',
-    reaction: 'Clever Reuse',
-  },
-  {
-    type: 'Habit tip',
-    title: 'Make the easy action visible.',
-    body: 'Reusable cups now sit beside the coffee machine instead of in a cupboard.',
-    reaction: 'Bright Move',
-  },
-]
-
-const resources = [
-  'One-minute guide to low-cost student sustainability',
-  'Campus recycling checklist',
-  'Responsible digital habits mini quiz',
-  'Team activity template for a waste-less lunch',
-]
-
 const forestPhotos = [
   {
     src: 'https://images.unsplash.com/photo-1448375240586-882707db888b?auto=format&fit=crop&w=1800&q=85',
@@ -260,8 +141,14 @@ const forestPhotos = [
   },
 ]
 
+const privacyOptions = [
+  { key: 'actions', label: 'Action feed', Icon: Lock },
+  { key: 'streak', label: 'Streak', Icon: SunMedium },
+  { key: 'reflections', label: 'Reflections', Icon: MapPinned },
+] as const
+
 function useCountUp(target: number, duration = 1400) {
-  const [value, setValue] = useState(0)
+  const [value, setValue] = useState(target)
 
   useEffect(() => {
     let frame = 0
@@ -285,37 +172,62 @@ function useCountUp(target: number, duration = 1400) {
 }
 
 function App() {
+  const [dashboard, setDashboard] = useState(createFallbackDashboard)
+  const [syncMode, setSyncMode] = useState<SyncMode>('loading')
   const [selectedCategory, setSelectedCategory] = useState<CategoryId>('reuse')
   const [selectedAction, setSelectedAction] = useState(categories[0].actions[0])
   const [quantity, setQuantity] = useState('1')
+  const [learner, setLearner] = useState('Simone')
+  const [visibility, setVisibility] = useState('first-name')
   const [reflection, setReflection] = useState('')
-  const [message, setMessage] = useState('Your action joined the ecosystem.')
+  const [message, setMessage] = useState('Your workspace is opening.')
+  const [formError, setFormError] = useState('')
   const [activeTile, setActiveTile] = useState(0)
+  const [pendingKey, setPendingKey] = useState<string | null>(null)
   const [seeds, setSeeds] = useState<Seed[]>([])
   const seedId = useRef(0)
   const lastSeedAt = useRef(0)
 
   const currentCategory = categories.find((item) => item.id === selectedCategory) ?? categories[0]
+  const stats = dashboard.stats
+  const project = dashboard.projects[0]
+  const ringProgress = Math.min(100, Math.max(12, Math.round((stats.actionsThisWeek / 35) * 100)))
+  const activeMiniCount = Math.min(35, Math.max(12, stats.actionsThisWeek + 6))
+  const latestActions = dashboard.actions.slice(0, 5)
 
-  const gridTiles = useMemo(() => {
-    return Array.from({ length: 72 }, (_, index) => {
-      if (index > 57 && index % 3 !== 0) {
-        return {
-          category: 'open',
-          learner: 'Open space',
-          action: 'Ready for the next small action',
-          impact: 'Future impact',
-          reflection: 'Your grid is ready whenever you are.',
-          date: 'Soon',
-          reaction: 'Space Saved',
-        } satisfies GridTile
-      }
+  const statCards = useMemo(
+    () => [
+      { label: 'Estimated CO2 saved this week', value: stats.co2Saved, suffix: ' kg' },
+      { label: 'Current team streak', value: stats.streakDays, suffix: ' days' },
+      { label: 'Learners checked in today', value: stats.checkedInToday, suffix: ' learners' },
+      { label: 'Single-use bottles avoided', value: stats.bottlesAvoided, suffix: ' bottles' },
+    ],
+    [stats],
+  )
 
-      return sampleTiles[index % sampleTiles.length]
-    })
+  useEffect(() => {
+    let isMounted = true
+
+    loadDashboard()
+      .then(({ data, mode }) => {
+        if (!isMounted) return
+        setDashboard(data)
+        setSyncMode(mode)
+        setLearner(data.profile.displayName)
+        setMessage(mode === 'synced' ? 'Workspace synced.' : 'Saved on this device.')
+      })
+      .catch((error: unknown) => {
+        if (!isMounted) return
+        setSyncMode('local')
+        setFormError(isApiError(error) ? error.message : 'The workspace opened with local saving.')
+      })
+
+    return () => {
+      isMounted = false
+    }
   }, [])
 
-  const handlePointerMove = (event: React.PointerEvent<HTMLElement>) => {
+  const handlePointerMove = (event: PointerEvent<HTMLElement>) => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
       return
     }
@@ -339,25 +251,111 @@ function App() {
     }, 1000)
   }
 
-  const handleCategoryChange = (category: Category) => {
+  const handleCategoryChange = (category: CategoryView) => {
     setSelectedCategory(category.id)
     setSelectedAction(category.actions[0])
   }
 
-  const handleLogAction = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleLogAction = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const nextMessage =
-      selectedCategory === 'reuse'
-        ? 'One less bottle. One more win.'
-        : selectedCategory === 'energy'
-          ? 'Small move. Real momentum.'
-          : selectedCategory === 'community'
-            ? 'The grid just got kinder.'
-            : 'Tiny action logged. Collective impact upgraded.'
+    setPendingKey('action')
+    setFormError('')
 
-    setMessage(nextMessage)
-    setActiveTile((current) => (current + 7) % 57)
-    setReflection('')
+    try {
+      const { data, mode } = await submitAction({
+        category: selectedCategory,
+        action: selectedAction,
+        quantity: Number(quantity),
+        learner,
+        reflection,
+        visibility,
+        locationCategory: 'Campus',
+        actionMode: 'individual',
+      })
+
+      setDashboard(data.dashboard)
+      setSyncMode(mode)
+      setMessage(`${data.record.impact.label} added to the grid.`)
+      setActiveTile(0)
+      setReflection('')
+      setQuantity('1')
+    } catch (error: unknown) {
+      setFormError(isApiError(error) ? error.message : 'The action could not be saved yet.')
+    } finally {
+      setPendingKey(null)
+    }
+  }
+
+  const handleJoinChallenge = async (challengeId: string) => {
+    setPendingKey(`challenge:${challengeId}`)
+    setFormError('')
+
+    try {
+      const { data, mode } = await joinChallenge(challengeId)
+      setDashboard(data)
+      setSyncMode(mode)
+      setMessage('Challenge joined.')
+    } catch (error: unknown) {
+      setFormError(isApiError(error) ? error.message : 'The challenge could not be updated yet.')
+    } finally {
+      setPendingKey(null)
+    }
+  }
+
+  const handleTrackResource = async (resourceId: string) => {
+    setPendingKey(`resource:${resourceId}`)
+    setFormError('')
+
+    try {
+      const { data, mode } = await trackResource(resourceId)
+      setDashboard(data.dashboard)
+      setSyncMode(mode)
+      setMessage(`${data.record.action} added from the resource library.`)
+      setActiveTile(0)
+    } catch (error: unknown) {
+      setFormError(isApiError(error) ? error.message : 'The resource could not be tracked yet.')
+    } finally {
+      setPendingKey(null)
+    }
+  }
+
+  const handleStoryReaction = async (storyId: string, reaction: string) => {
+    setPendingKey(`story:${storyId}`)
+
+    try {
+      const { data, mode } = await addStoryReaction(storyId, reaction)
+      setDashboard(data)
+      setSyncMode(mode)
+      setMessage('Reaction added.')
+    } catch (error: unknown) {
+      setFormError(isApiError(error) ? error.message : 'The reaction could not be saved yet.')
+    } finally {
+      setPendingKey(null)
+    }
+  }
+
+  const handlePrivacyToggle = async (key: string) => {
+    const nextValue = !dashboard.profile.privacy[key]
+    setPendingKey(`privacy:${key}`)
+
+    try {
+      const { data, mode } = await updatePrivacy({ [key]: nextValue })
+      setDashboard(data)
+      setSyncMode(mode)
+      setMessage('Privacy updated.')
+    } catch (error: unknown) {
+      setFormError(isApiError(error) ? error.message : 'Privacy could not be updated yet.')
+    } finally {
+      setPendingKey(null)
+    }
+  }
+
+  const handleResetLocal = () => {
+    const nextDashboard = resetLocalDashboard()
+    setDashboard(nextDashboard)
+    setSyncMode('local')
+    setMessage('Saved view reset.')
+    setActiveTile(0)
   }
 
   return (
@@ -384,10 +382,10 @@ function App() {
           </div>
           <div className="nav-actions">
             <a className="text-link" href="#profile">
-              Sign In
+              Profile
             </a>
             <a className="workspace-link" href="#dashboard">
-              Back to Workspace <ArrowUpRight size={16} />
+              Workspace <ArrowUpRight size={16} />
             </a>
           </div>
         </nav>
@@ -397,8 +395,8 @@ function App() {
             <p className="eyebrow">Small choices. Visible impact. Shared momentum.</p>
             <h1>Small choices, visible impact.</h1>
             <p className="hero-lede">
-              A clear view of everyday environmental actions for student teams who want
-              progress without shame, pressure, or noise.
+              A clear view of everyday environmental actions for student teams who want progress
+              without shame, pressure, or noise.
             </p>
             <div className="hero-buttons">
               <a className="primary-button" href="#log">
@@ -415,13 +413,13 @@ function App() {
           <div className="garden-console" aria-label="Animated digital garden preview">
             <div className="console-header">
               <span>Living GreenGrid</span>
-              <span className="live-dot">live</span>
+              <span className={`live-dot ${syncMode}`}>{syncLabel(syncMode)}</span>
             </div>
             <div className="mini-grid">
-              {gridTiles.slice(0, 36).map((tile, index) => (
+              {dashboard.tiles.slice(0, 36).map((tile, index) => (
                 <span
-                  className={`mini-tile ${tile.category} ${index <= activeTile ? 'is-awake' : ''}`}
-                  key={`${tile.action}-${index}`}
+                  className={`mini-tile ${tile.category} ${index <= activeMiniCount ? 'is-awake' : ''}`}
+                  key={`${tile.id}-${index}`}
                   style={{ animationDelay: `${index * 38}ms` }}
                 />
               ))}
@@ -429,9 +427,9 @@ function App() {
             <div className="console-footer">
               <span>
                 <Sprout size={16} />
-                Row 3 grew a refill garden
+                {dashboard.team.name}
               </span>
-              <span>27 actions this week</span>
+              <span>{stats.actionsThisWeek} actions this week</span>
             </div>
           </div>
         </div>
@@ -489,40 +487,49 @@ function App() {
         <div className="dashboard-header">
           <div>
             <p className="eyebrow">Main dashboard</p>
-            <h2>Good afternoon, Simone.</h2>
-            <p>Your team has completed 27 small actions this week.</p>
+            <h2>{greeting()}, {dashboard.profile.displayName}.</h2>
+            <p>
+              {dashboard.team.name} has completed {stats.actionsThisWeek} small actions this week.
+            </p>
           </div>
           <div className="quick-actions" aria-label="Quick actions">
-            <button type="button">
+            <a href="#log">
               <Plus size={18} />
               Log
-            </button>
-            <button type="button">
-              <Camera size={18} />
-              Evidence
-            </button>
-            <button type="button">
+            </a>
+            <a href="#resources">
+              <BookOpen size={18} />
+              Resource
+            </a>
+            <a href="#challenges">
               <Trophy size={18} />
               Challenge
-            </button>
-            <button type="button">
+            </a>
+            <a href="#stories">
               <MessageCircleHeart size={18} />
               Celebrate
-            </button>
+            </a>
           </div>
         </div>
 
         <div className="dashboard-grid">
           <article className="impact-ring-panel">
-            <div className="impact-ring" aria-label="Weekly progress 78 percent">
+            <div
+              className="impact-ring"
+              style={{ '--progress': `${ringProgress * 3.6}deg` } as CSSProperties}
+              aria-label={`Weekly progress ${ringProgress} percent`}
+            >
               <div>
-                <strong>78%</strong>
+                <strong>{ringProgress}%</strong>
                 <span>weekly pulse</span>
               </div>
             </div>
             <div>
               <h3>Weekly impact overview</h3>
-              <p>18.4 kg CO2 saved, 64 bottles avoided, 27 actions completed, and 8 active learners.</p>
+              <p>
+                {stats.co2Saved.toFixed(1)} kg CO2 saved, {stats.bottlesAvoided} bottles avoided,{' '}
+                {stats.actionsThisWeek} actions completed, and {stats.activeLearners} active learners.
+              </p>
               <div className="floating-icons" aria-hidden="true">
                 <Droplets size={18} />
                 <Recycle size={18} />
@@ -535,14 +542,34 @@ function App() {
           <article className="momentum-panel">
             <h3>Team momentum</h3>
             <div className="momentum-list">
-              <span>Most consistent</span>
-              <strong>Maya and Jon</strong>
-              <span>Best first step</span>
-              <strong>Anonymous refill action</strong>
-              <span>Community spark</span>
-              <strong>Nia shared a guide</strong>
+              <span>Top habit</span>
+              <strong>{stats.topHabit}</strong>
+              <span>Team note</span>
+              <strong>{dashboard.team.motto}</strong>
+              <span>Community reach</span>
+              <strong>{stats.communityReach} touchpoints</strong>
             </div>
           </article>
+        </div>
+
+        <div className="activity-panel">
+          <div>
+            <p className="eyebrow">Recent activity</p>
+            <h3>Fresh tiles from the team</h3>
+          </div>
+          <div className="activity-list">
+            {latestActions.map((action) => (
+              <article key={action.id}>
+                <span className={`activity-dot ${action.category}`} />
+                <div>
+                  <strong>{action.action}</strong>
+                  <p>
+                    {action.learner} - {action.impact.label}
+                  </p>
+                </div>
+              </article>
+            ))}
+          </div>
         </div>
 
         <div className="living-grid-wrap">
@@ -551,23 +578,13 @@ function App() {
             <h2>Every tile is a real action with room for the next one.</h2>
           </div>
           <div className="living-grid" aria-label="Interactive action grid">
-            {gridTiles.map((tile, index) => (
-              <button
-                className={`grid-tile ${tile.category} ${index === activeTile ? 'latest' : ''} ${
-                  Math.floor(index / 12) === 2 ? 'row-complete' : ''
-                }`}
-                key={`${tile.action}-${index}`}
-                type="button"
-              >
-                <span className="tile-tooltip">
-                  <strong>{tile.learner}</strong>
-                  <span>{tile.action}</span>
-                  <span>{tile.impact}</span>
-                  <span>{tile.date}</span>
-                  <em>{tile.reflection}</em>
-                  <small>{tile.reaction}</small>
-                </span>
-              </button>
+            {dashboard.tiles.map((tile, index) => (
+              <GridButton
+                active={index === activeTile}
+                index={index}
+                key={`${tile.id}-${index}`}
+                tile={tile}
+              />
             ))}
           </div>
           <div className="legend">
@@ -611,23 +628,39 @@ function App() {
           </div>
 
           <div className="form-panel">
-            <label>
-              Action
-              <select value={selectedAction} onChange={(event) => setSelectedAction(event.target.value)}>
-                {currentCategory.actions.map((action) => (
-                  <option key={action}>{action}</option>
-                ))}
-              </select>
-            </label>
-            <label>
-              Quantity
-              <input
-                min="1"
-                type="number"
-                value={quantity}
-                onChange={(event) => setQuantity(event.target.value)}
-              />
-            </label>
+            <div className="form-row">
+              <label>
+                Action
+                <select value={selectedAction} onChange={(event) => setSelectedAction(event.target.value)}>
+                  {currentCategory.actions.map((action) => (
+                    <option key={action}>{action}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Quantity
+                <input
+                  min="1"
+                  type="number"
+                  value={quantity}
+                  onChange={(event) => setQuantity(event.target.value)}
+                />
+              </label>
+            </div>
+            <div className="form-row">
+              <label>
+                Name
+                <input value={learner} onChange={(event) => setLearner(event.target.value)} />
+              </label>
+              <label>
+                Visibility
+                <select value={visibility} onChange={(event) => setVisibility(event.target.value)}>
+                  <option value="first-name">First name</option>
+                  <option value="anonymous">Anonymous</option>
+                  <option value="team">Team only</option>
+                </select>
+              </label>
+            </div>
             <label>
               Reflection
               <textarea
@@ -641,15 +674,16 @@ function App() {
                 <ShieldCheck size={18} />
                 Individual, team, or anonymous logging stays positive.
               </span>
-              <button type="submit">
+              <button disabled={pendingKey === 'action'} type="submit">
                 <Send size={18} />
-                Add tile
+                {pendingKey === 'action' ? 'Adding' : 'Add tile'}
               </button>
             </div>
             <p className="success-message">
               <Sparkles size={18} />
               {message}
             </p>
+            {formError ? <p className="form-error">{formError}</p> : null}
           </div>
         </form>
       </section>
@@ -660,8 +694,12 @@ function App() {
           <h2>Floating missions that build a shared green world.</h2>
         </div>
         <div className="challenge-map">
-          {challenges.map((challenge, index) => (
-            <article className="challenge-island" key={challenge.title} style={{ '--accent': challenge.accent } as React.CSSProperties}>
+          {dashboard.challenges.map((challenge, index) => (
+            <article
+              className="challenge-island"
+              key={challenge.id}
+              style={{ '--accent': challenge.accent } as CSSProperties}
+            >
               <span className="island-number">0{index + 1}</span>
               <h3>{challenge.title}</h3>
               <p>{challenge.detail}</p>
@@ -669,6 +707,14 @@ function App() {
                 <span style={{ width: `${challenge.progress}%` }} />
               </div>
               <strong>{challenge.reward}</strong>
+              <button
+                disabled={pendingKey === `challenge:${challenge.id}`}
+                type="button"
+                onClick={() => handleJoinChallenge(challenge.id)}
+              >
+                <Trophy size={17} />
+                {challenge.joined ? 'Boost mission' : 'Join mission'}
+              </button>
             </article>
           ))}
         </div>
@@ -706,41 +752,35 @@ function App() {
           <h2>Transparent estimates, explained in plain language.</h2>
         </div>
         <div className="explorer-grid">
-          <article>
-            <Waves size={24} />
-            <h3>64 bottles avoided</h3>
-            <p>Calculated from 64 recorded refill actions. This is an activity estimate, not a precise measurement.</p>
-            <span>Confidence: high</span>
-          </article>
-          <article>
-            <Flame size={24} />
-            <h3>18.4 kg CO2 saved</h3>
-            <p>Built from logged transport, energy, food and reuse actions using conservative conversion factors.</p>
-            <span>Reviewed this month</span>
-          </article>
-          <article>
-            <Users size={24} />
-            <h3>8 active learners</h3>
-            <p>Participation is shown as momentum categories instead of negative rankings or red warnings.</p>
-            <span>No-shame design</span>
-          </article>
+          {dashboard.calculations.map((calculation, index) => (
+            <article key={calculation.title}>
+              {index === 0 ? <Waves size={24} /> : index === 1 ? <Flame size={24} /> : <Users size={24} />}
+              <h3>{calculation.title}</h3>
+              <p>{calculation.body}</p>
+              <span>Confidence: {calculation.confidence}</span>
+            </article>
+          ))}
         </div>
       </section>
 
-      <section className="section stories-section">
+      <section className="section stories-section" id="stories">
         <div className="section-heading">
           <p className="eyebrow">Green stories</p>
           <h2>A calmer feed for progress, tips and team wins.</h2>
         </div>
         <div className="story-grid">
-          {stories.map((story) => (
-            <article key={story.title}>
+          {dashboard.stories.map((story) => (
+            <article key={story.id}>
               <span>{story.type}</span>
               <h3>{story.title}</h3>
               <p>{story.body}</p>
-              <button type="button">
+              <button
+                disabled={pendingKey === `story:${story.id}`}
+                type="button"
+                onClick={() => handleStoryReaction(story.id, story.reaction)}
+              >
                 <Sprout size={17} />
-                {story.reaction}
+                {story.reaction} {story.reactions[story.reaction] || 0}
               </button>
             </article>
           ))}
@@ -757,11 +797,20 @@ function App() {
           </p>
         </div>
         <div className="resource-list">
-          {resources.map((resource) => (
-            <article key={resource}>
+          {dashboard.resources.map((resource) => (
+            <article key={resource.id}>
               <BookOpen size={21} />
-              <span>{resource}</span>
-              <button type="button">
+              <span>
+                <strong>{resource.title}</strong>
+                <small>
+                  {resource.format} - {resource.category}
+                </small>
+              </span>
+              <button
+                disabled={pendingKey === `resource:${resource.id}`}
+                type="button"
+                onClick={() => handleTrackResource(resource.id)}
+              >
                 <CheckCircle2 size={17} />
                 Track
               </button>
@@ -774,16 +823,16 @@ function App() {
         <div className="project-card">
           <div>
             <p className="eyebrow">Team projects</p>
-            <h2>Community garden sprint</h2>
-            <p>
-              Objective, members, tasks, timeline, evidence, impact and reflections live in one calm workspace.
-            </p>
+            <h2>{project.title}</h2>
+            <p>{project.objective}</p>
           </div>
           <div className="project-board" aria-label="Project task board">
-            <span>Plan bed layout</span>
-            <span>Collect compost</span>
-            <span>Build water guide</span>
-            <span>Final showcase</span>
+            {project.tasks.map((task) => (
+              <span className={task.done ? 'done' : ''} key={task.title}>
+                {task.done ? <CheckCircle2 size={17} /> : <Sprout size={17} />}
+                {task.title}
+              </span>
+            ))}
           </div>
         </div>
       </section>
@@ -792,22 +841,38 @@ function App() {
         <div>
           <p className="eyebrow">Profile and privacy</p>
           <h2>Display the contribution, not the pressure.</h2>
-          <p>I am currently working on reducing single-use plastic.</p>
+          <p>I am currently working on {dashboard.profile.habitFocus.toLowerCase()}.</p>
         </div>
         <div className="privacy-controls">
-          <span>
-            <Lock size={18} />
-            First name only
-          </span>
-          <span>
-            <MapPinned size={18} />
-            Location category
-          </span>
-          <span>
-            <SunMedium size={18} />
-            Quiet reminders
-          </span>
+          {privacyOptions.map(({ key, label, Icon }) => {
+            const enabled = Boolean(dashboard.profile.privacy[key])
+            return (
+              <button
+                aria-pressed={enabled}
+                className={enabled ? 'enabled' : ''}
+                disabled={pendingKey === `privacy:${key}`}
+                key={key}
+                type="button"
+                onClick={() => handlePrivacyToggle(key)}
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+                <small>{enabled ? 'On' : 'Off'}</small>
+              </button>
+            )
+          })}
         </div>
+      </section>
+
+      <section className="workspace-status" aria-live="polite">
+        <span className={`live-dot ${syncMode}`}>{syncLabel(syncMode)}</span>
+        <span>{message}</span>
+        {syncMode === 'local' ? (
+          <button type="button" onClick={handleResetLocal}>
+            <RotateCcw size={16} />
+            Reset saved view
+          </button>
+        ) : null}
       </section>
 
       <footer>
@@ -815,6 +880,26 @@ function App() {
         <span>a quantumcupcakecreation</span>
       </footer>
     </main>
+  )
+}
+
+function GridButton({ active, index, tile }: { active: boolean; index: number; tile: GridTile }) {
+  return (
+    <button
+      className={`grid-tile ${tile.category} ${active ? 'latest' : ''} ${
+        Math.floor(index / 12) === 2 ? 'row-complete' : ''
+      }`}
+      type="button"
+    >
+      <span className="tile-tooltip">
+        <strong>{tile.learner}</strong>
+        <span>{tile.action}</span>
+        <span>{tile.impact}</span>
+        <span>{tile.date}</span>
+        <em>{tile.reflection}</em>
+        <small>{tile.reaction}</small>
+      </span>
+    </button>
   )
 }
 
@@ -843,6 +928,19 @@ function ImpactCard({
       <p>Built from recorded team actions using conservative activity estimates.</p>
     </article>
   )
+}
+
+function greeting() {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Good morning'
+  if (hour < 18) return 'Good afternoon'
+  return 'Good evening'
+}
+
+function syncLabel(mode: SyncMode) {
+  if (mode === 'synced') return 'Live sync'
+  if (mode === 'local') return 'Local save'
+  return 'Syncing'
 }
 
 export default App

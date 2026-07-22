@@ -11,6 +11,8 @@ node_modules
 dist
 dist-ssr
 *.local
+data/greengrid-store.json
+data/greengrid-store.json.tmp
 
 # Editor directories and files
 .vscode/*
